@@ -86,7 +86,10 @@ export class TerminalController {
       const key = event.key.toLowerCase();
       const copy = (event.ctrlKey || event.metaKey) && event.shiftKey && key === 'c';
       const paste =
-        ((event.ctrlKey || event.metaKey) && key === 'v') || (event.shiftKey && key === 'insert');
+        ((event.ctrlKey || event.metaKey) &&
+          key === 'v' &&
+          (event.shiftKey || event.metaKey || this.terminal.buffer.active.type !== 'alternate')) ||
+        (event.shiftKey && key === 'insert');
       if (copy || paste) {
         event.preventDefault();
         if (event.type === 'keydown') void (copy ? this.copy() : this.paste());

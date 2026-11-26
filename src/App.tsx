@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { Channel, invoke } from '@tauri-apps/api/core';
+import { Channel, invoke, isTauri } from '@tauri-apps/api/core';
 import {
   ChevronDown,
   Check,
@@ -12,9 +12,19 @@ import {
   Settings2,
   TerminalSquare,
   X,
+  BookOpen,
 } from 'lucide-react';
-import { defaults, loadSettings, normalizeSettings, SETTINGS_KEY, type Settings } from './settings';
+import {
+  defaults,
+  loadSettings,
+  normalizeSettings,
+  SETTINGS_KEY,
+  windowSizes,
+  type Settings,
+} from './settings';
+import { applyWindowSize } from './window';
 import { TerminalController, type PaneState, type Shell } from './terminal';
+import { CommandReference } from './CommandReference';
 
 type Pane = { key: string; number: number; shell: Shell; cwd: string };
 const windows = navigator.userAgent.includes('Windows');
@@ -170,8 +180,12 @@ export function App() {
   const [selectedShell, setShell] = useState<Shell>(shells[0].id);
   const [cwd, setCwd] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showCommands, setShowCommands] = useState(false);
+  const commandsButton = useRef<HTMLButtonElement>(null);
   const [fonts, setFonts] = useState<string[]>([]);
   const [message, setMessage] = useState('');
+  const [windowSizeNote, setWindowSizeNote] = useState('');
+  const windowSizeQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [splitX, setSplitX] = useState(50);
   const [splitY, setSplitY] = useState(50);
   const controllers = useRef(new Map<string, TerminalController>());
@@ -196,6 +210,27 @@ export function App() {
       notify('설정을 저장하지 못했습니다. 현재 창에는 적용됩니다.');
     }
   }, [settings, notify]);
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    windowSizeQueue.current = windowSizeQueue.current
+      .then(async () => {
+        if (cancelled) return;
+        const result = await applyWindowSize(settings.windowSize);
+        if (!cancelled)
+          setWindowSizeNote(
+            result.adjusted
+              ? `현재 화면에 맞춰 ${result.width} × ${result.height} 크기로 적용했습니다.`
+              : '',
+          );
+      })
+      .catch((error) => {
+        if (!cancelled) notify(`창 크기 변경 실패: ${String(error)}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settings.windowSize, notify]);
   useEffect(() => {
     void invoke<string[]>('list_fonts')
       .then(setFonts)
@@ -226,7 +261,13 @@ export function App() {
   }, [selectedShell, cwd]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.isComposing || event.keyCode === 229 || settingsDialog.current?.open) return;
+      if (
+        event.isComposing ||
+        event.keyCode === 229 ||
+        settingsDialog.current?.open ||
+        showCommands
+      )
+        return;
       if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 't') {
         event.preventDefault();
         add();
@@ -242,7 +283,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [panes, add]);
+  }, [panes, add, showCommands]);
   const update = (patch: Partial<Settings>) =>
     setSettings((prev) => normalizeSettings({ ...prev, ...patch }));
   const close = (key: string) => {
@@ -287,13 +328,22 @@ export function App() {
           <span className="workspace-label">
             <span className="online-dot" /> LOCAL WORKSPACE
           </span>
-          <button
-            ref={settingsButton}
-            className={`settings-button ${showSettings ? 'selected' : ''}`}
-            onClick={() => setShowSettings(true)}
-          >
-            <Settings2 size={16} /> 화면 설정
-          </button>
+          <div className="header-actions">
+            <button
+              ref={commandsButton}
+              className={`settings-button ${showCommands ? 'selected' : ''}`}
+              onClick={() => setShowCommands(true)}
+            >
+              <BookOpen size={16} /> 명령어 모음
+            </button>
+            <button
+              ref={settingsButton}
+              className={`settings-button ${showSettings ? 'selected' : ''}`}
+              onClick={() => setShowSettings(true)}
+            >
+              <Settings2 size={16} /> 화면 설정
+            </button>
+          </div>
         </div>
       </header>
       <main>
@@ -436,6 +486,16 @@ export function App() {
           </button>
         </div>
       )}
+      <CommandReference
+        open={showCommands}
+        initialShell={
+          (panes.find((pane) => pane.key === active)?.shell ?? selectedShell) === 'cmd'
+            ? 'cmd'
+            : 'powershell'
+        }
+        onClose={() => setShowCommands(false)}
+        trigger={commandsButton}
+      />
       <dialog
         ref={settingsDialog}
         aria-labelledby="settings-title"
@@ -443,7 +503,12 @@ export function App() {
         onCancel={() => setShowSettings(false)}
         onClose={() => {
           setShowSettings(false);
-          settingsButton.current?.focus();
+          if (
+            document.activeElement === document.body ||
+            settingsDialog.current?.contains(document.activeElement)
+          ) {
+            settingsButton.current?.focus();
+          }
         }}
         onClick={(e) => {
           if (e.target === e.currentTarget) setShowSettings(false);
@@ -460,6 +525,29 @@ export function App() {
             </button>
           </header>
           <p className="settings-intro">모든 터미널에 바로 적용하고, 다음 실행에도 기억해요.</p>
+          <div className="setting-row">
+            <label htmlFor="window-size">창 크기</label>
+            <select
+              id="window-size"
+              value={settings.windowSize}
+              onChange={(event) => update({ windowSize: event.target.value })}
+            >
+              {windowSizes.map((size) => (
+                <option key={size.id} value={size.id}>
+                  {size.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="field-note">
+            Windows 배율을 반영하며, 화면보다 크면 작업 영역에 맞춥니다.
+            {windowSizeNote && (
+              <>
+                <br />
+                {windowSizeNote}
+              </>
+            )}
+          </p>
           <label className="setting-label" htmlFor="font-family">
             터미널 글꼴 <span>설치된 글꼴 선택 또는 직접 입력</span>
           </label>

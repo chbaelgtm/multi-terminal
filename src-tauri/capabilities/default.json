@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "core:window:allow-close",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:window:allow-unmaximize",
     "clipboard-manager:allow-read-text",
     "clipboard-manager:allow-write-text"
   ]

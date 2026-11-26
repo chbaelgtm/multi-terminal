@@ -2,7 +2,7 @@ import { chromium, expect } from '@playwright/test';
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import path from 'node:path';
 
@@ -12,21 +12,49 @@ if (process.platform !== 'win32')
   throw new Error('The desktop smoke suite currently targets Windows WebView2.');
 const root = path.resolve(import.meta.dirname, '..');
 const port = Number(process.env.TERMINAL_CDP_PORT || 9223);
+const webPort = Number(process.env.TERMINAL_WEB_PORT || 1430);
 const attach = process.env.TERMINAL_ATTACH === '1';
 await mkdir(path.join(root, 'test-results'), { recursive: true });
 let child;
 if (!attach) {
   const log = createWriteStream(path.join(root, 'test-results', 'desktop-dev.log'));
-  child = spawn(process.execPath, ['node_modules/@tauri-apps/cli/tauri.js', 'dev', '--no-watch'], {
-    cwd: root,
-    windowsHide: true,
-    env: {
-      ...process.env,
-      VITE_TERMINAL_E2E: '1',
-      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+  const baseConfig = JSON.parse(
+    await readFile(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'),
+  );
+  const testConfig = {
+    build: {
+      beforeDevCommand: `node node_modules/vite/bin/vite.js --host 127.0.0.1 --port ${webPort} --strictPort`,
+      devUrl: `http://127.0.0.1:${webPort}`,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+    app: {
+      windows: baseConfig.app.windows.map((window) => ({
+        ...window,
+        dataDirectory: 'multi-terminal-smoke-profile',
+      })),
+    },
+  };
+  child = spawn(
+    process.execPath,
+    [
+      'node_modules/@tauri-apps/cli/tauri.js',
+      'dev',
+      '--no-watch',
+      '--config',
+      JSON.stringify(testConfig),
+    ],
+    {
+      cwd: root,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        VITE_TERMINAL_E2E: '1',
+        CARGO_TARGET_DIR: path.join(root, 'src-tauri', 'target', 'smoke'),
+        WEBVIEW2_USER_DATA_FOLDER: path.join(root, 'test-results', 'desktop-webview'),
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}`,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
   child.stdout.pipe(log);
   child.stderr.pipe(log);
 }
@@ -90,7 +118,7 @@ try {
     page = browser
       .contexts()
       .flatMap((context) => context.pages())
-      .find((page) => page.url().includes('1420'));
+      .find((page) => page.url().startsWith(`http://127.0.0.1:${webPort}/`));
     if (page) break;
     await delay(500);
   }
@@ -101,9 +129,11 @@ try {
   await expect(page.locator('.pane-status').first()).toHaveText('실행 중');
   previousClipboard = await bridge(() =>
     window.__terminalTest.invoke('plugin:clipboard-manager|read_text'),
-  );
+  ).catch(() => null);
   previousSettings = await page.evaluate(() => localStorage.getItem('multi-terminal.settings.v1'));
   pass('actual Tauri window starts a live PTY');
+  const { checkCommandReference } = await import('./command-checks.mjs');
+  await checkCommandReference({ page, root, buffer, pids, pass });
 
   for (let i = 0; i < 3; i++)
     await page.getByRole('button', { name: '터미널 추가', exact: true }).click();
@@ -135,6 +165,10 @@ try {
       if (j !== i) assert(!(await buffer(i)).includes(`ISOLATION_pane${j}`));
   }
   pass('four shells keep independent variables and output streams');
+  if (process.env.TERMINAL_VIM_TEST === '1') {
+    const { checkVim } = await import('./vim-checks.mjs');
+    await checkVim({ page, root, buffer, command, pids, pass });
+  }
 
   const koreanCommand = "Write-Output ('CLIP_' + '안녕하세요 한글 테스트 ✓')";
   await bridge(
@@ -253,6 +287,78 @@ try {
   assert((await buffer(0)).includes(`GEOMETRY_${currentGeometry}`));
   pass('panel resizing reaches real ConPTY rows and columns');
 
+  const windowState = () =>
+    bridge(async () => {
+      const invoke = window.__terminalTest.invoke;
+      const [inner, outer, position, scale, monitor, fullscreen] = await Promise.all([
+        invoke('plugin:window|inner_size', { label: 'main' }),
+        invoke('plugin:window|outer_size', { label: 'main' }),
+        invoke('plugin:window|outer_position', { label: 'main' }),
+        invoke('plugin:window|scale_factor', { label: 'main' }),
+        invoke('plugin:window|current_monitor'),
+        invoke('plugin:window|is_fullscreen', { label: 'main' }),
+      ]);
+      return { inner, outer, position, scale, monitor, fullscreen };
+    });
+  const sizePids = await pids();
+  await page.getByRole('button', { name: '화면 설정', exact: true }).click();
+  const sizeSelect = page.getByLabel('창 크기', { exact: true });
+  await expect(sizeSelect.locator('option')).toHaveCount(6);
+  assert(!(await sizeSelect.textContent()).includes('전체 화면'));
+  for (const preset of ['1280x720', '1600x900', '2560x1440']) {
+    await sizeSelect.selectOption(preset);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => JSON.parse(localStorage.getItem('multi-terminal.settings.v1')).windowSize,
+        ),
+      )
+      .toBe(preset);
+    // Await the serialized native resize; onResize must also finish before the
+    // next action so this verifies the actual window, not just the select value.
+    const [width, height] = preset.split('x').map(Number);
+    await expect
+      .poll(async () => {
+        const current = await windowState();
+        const maxWidth = Math.max(
+          760,
+          Math.floor(
+            (current.monitor.workArea.size.width - (current.outer.width - current.inner.width)) /
+              current.scale,
+          ) - 32,
+        );
+        const maxHeight = Math.max(
+          560,
+          Math.floor(
+            (current.monitor.workArea.size.height - (current.outer.height - current.inner.height)) /
+              current.scale,
+          ) - 32,
+        );
+        return (
+          Math.abs(current.inner.width / current.scale - Math.min(width, maxWidth)) <= 1 &&
+          Math.abs(current.inner.height / current.scale - Math.min(height, maxHeight)) <= 1
+        );
+      })
+      .toBe(true);
+    const current = await windowState();
+    assert.equal(current.fullscreen, false);
+    assert(current.position.x >= current.monitor.workArea.position.x - 1);
+    assert(current.position.y >= current.monitor.workArea.position.y - 1);
+    assert(
+      current.position.x + current.outer.width <=
+        current.monitor.workArea.position.x + current.monitor.workArea.size.width + 1,
+    );
+    assert(
+      current.position.y + current.outer.height <=
+        current.monitor.workArea.position.y + current.monitor.workArea.size.height + 1,
+    );
+  }
+  const savedWindowState = await windowState();
+  assert.deepEqual(await pids(), sizePids, 'window resizing must not restart shells');
+  await page.screenshot({ path: path.join(root, 'test-results', 'window-size-settings.png') });
+  await page.getByRole('button', { name: '완료', exact: true }).click();
+  pass('window size select applies presets, fits monitor work area, and never enters fullscreen');
+
   await command(1, "1..12000 | ForEach-Object { 'FLOW_' + $_ }; Write-Output ('FLOW_' + 'DONE')");
   await expect.poll(() => buffer(1), { timeout: 45000 }).toContain('FLOW_DONE');
   pass('large output crosses the bounded output window without stalling');
@@ -303,6 +409,8 @@ try {
     )
     .toBe(19);
   pass('document reload restores settings and cleans the previous PTY sessions');
+  await expect.poll(async () => (await windowState()).inner).toEqual(savedWindowState.inner);
+  pass('saved window size is reapplied after document reload');
 
   // Restore appearance and clipboard, then close the native window gracefully.
   await bridge(

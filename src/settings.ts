@@ -4,7 +4,17 @@ export type Settings = {
   lineHeight: number;
   scrollback: number;
   cursorBlink: boolean;
+  windowSize: string;
 };
+
+export const windowSizes = [
+  { id: '1280x720', width: 1280, height: 720, label: '1280 × 720 · HD' },
+  { id: '1366x768', width: 1366, height: 768, label: '1366 × 768 · 노트북' },
+  { id: '1440x900', width: 1440, height: 900, label: '1440 × 900 · 기본' },
+  { id: '1600x900', width: 1600, height: 900, label: '1600 × 900 · HD+' },
+  { id: '1920x1080', width: 1920, height: 1080, label: '1920 × 1080 · FHD' },
+  { id: '2560x1440', width: 2560, height: 1440, label: '2560 × 1440 · QHD' },
+] as const;
 
 export const SETTINGS_KEY = 'multi-terminal.settings.v1';
 export const defaults: Settings = {
@@ -13,6 +23,7 @@ export const defaults: Settings = {
   lineHeight: 1.25,
   scrollback: 5000,
   cursorBlink: true,
+  windowSize: '1440x900',
 };
 
 export function normalizeSettings(value: unknown): Settings {
@@ -28,6 +39,9 @@ export function normalizeSettings(value: unknown): Settings {
     lineHeight: number(raw.lineHeight, defaults.lineHeight, 1, 1.8),
     scrollback: Math.round(number(raw.scrollback, defaults.scrollback, 1000, 20000)),
     cursorBlink: typeof raw.cursorBlink === 'boolean' ? raw.cursorBlink : defaults.cursorBlink,
+    windowSize: windowSizes.some((size) => size.id === raw.windowSize)
+      ? raw.windowSize!
+      : defaults.windowSize,
   };
 }
 

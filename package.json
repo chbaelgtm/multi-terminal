@@ -11,7 +11,8 @@
     "desktop": "tauri dev",
     "test": "vitest run",
     "test:desktop": "node scripts/desktop-smoke.mjs",
-    "test:release": "node scripts/release-smoke.mjs"
+    "test:release": "node scripts/release-smoke.mjs",
+    "test:vim": "node scripts/vim-smoke.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5",

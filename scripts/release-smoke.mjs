@@ -9,7 +9,11 @@ const root = path.resolve(import.meta.dirname, '..');
 const executable = path.join(root, 'src-tauri/target/release/multi-terminal.exe');
 const app = spawn(executable, [], {
   windowsHide: true,
-  env: { ...process.env, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9224' },
+  env: {
+    ...process.env,
+    WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: '--remote-debugging-port=9224',
+    WEBVIEW2_USER_DATA_FOLDER: path.join(root, 'test-results', 'release-webview'),
+  },
 });
 let browser, page;
 try {

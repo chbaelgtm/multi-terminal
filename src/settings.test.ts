@@ -31,4 +31,10 @@ describe('persisted settings', () => {
     expect(terminalFont('bad"\\\nfont')).toContain('"badfont"');
     expect(terminalFont('Consolas')).toContain('Malgun Gothic');
   });
+  it('migrates old settings and rejects unsupported or fullscreen sizes', () => {
+    expect(normalizeSettings({ fontSize: 18 }).windowSize).toBe('1440x900');
+    expect(normalizeSettings({ windowSize: '1920x1080' }).windowSize).toBe('1920x1080');
+    expect(normalizeSettings({ windowSize: 'fullscreen' }).windowSize).toBe(defaults.windowSize);
+    expect(normalizeSettings({ windowSize: '99999x99999' }).windowSize).toBe(defaults.windowSize);
+  });
 });
